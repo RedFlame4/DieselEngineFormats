@@ -71,17 +71,18 @@ namespace DieselEngineFormats.Crate
     ///     exist and what type they are, across every .crate file. No offsets/
     ///     sizes -- open the individual CrateFile to extract data.
     ///
-    ///     Layout: global header (12 bytes: version, flags, reserved), then
-    ///     repeated blocks (crate name, entry count, that many 32-byte
-    ///     CrateManifestEntry records) until an empty crate name, then a
-    ///     trailer holding the same property/bitflag table as crates.properties
-    ///     (minus the "YURI" magic and padding).
+    ///     Layout: global header (12 bytes: version, block count, reserved),
+    ///     then exactly BlockCount blocks (crate name, entry count, that many
+    ///     32-byte CrateManifestEntry records), then a trailer: a variable-
+    ///     length patch/source list followed by the same property/bitflag table
+    ///     as crates.properties (minus the "YURI" magic and padding).
     /// </summary>
     public class CrateManifest : DieselFormat
     {
         public uint Version { get; set; }
 
-        public uint Flags { get; set; }
+        /// <summary>Number of blocks that follow the header.</summary>
+        public uint BlockCount { get; set; }
 
         public List<CrateManifestBlock> Blocks { get; } = new List<CrateManifestBlock>();
 
@@ -94,23 +95,14 @@ namespace DieselEngineFormats.Crate
         public override void ReadFile(BinaryReader br)
         {
             Version = br.ReadUInt32();
-            Flags = br.ReadUInt32();
+            BlockCount = br.ReadUInt32();
             br.ReadUInt32(); // reserved
 
             Blocks.Clear();
-            while (true)
+            Blocks.Capacity = (int)BlockCount;
+            for (uint b = 0; b < BlockCount; b++)
             {
-                long blockStart = br.BaseStream.Position;
                 string name = ReadCString(br);
-
-                if (name.Length == 0)
-                {
-                    // Empty name means this is the trailer's 16 zero-byte prefix, not a block.
-                    br.BaseStream.Position = blockStart + 16;
-                    ReadPropertyTrailer(br);
-                    break;
-                }
-
                 ulong count = br.ReadUInt64();
                 var block = new CrateManifestBlock { CrateName = name };
                 block.Entries.Capacity = (int)count;
@@ -119,10 +111,26 @@ namespace DieselEngineFormats.Crate
 
                 Blocks.Add(block);
             }
+
+            ReadPropertyTrailer(br);
         }
 
         private void ReadPropertyTrailer(BinaryReader br)
         {
+            // The trailer is a patch/source list followed by the property table.
+            // The list is a u64 count of records; each record is a name, three
+            // u32s, and the name repeated.
+            ulong patchCount = br.ReadUInt64();
+            for (ulong i = 0; i < patchCount; i++)
+            {
+                ReadCString(br); // patch name
+                br.ReadUInt32();
+                br.ReadUInt32();
+                br.ReadUInt32();
+                ReadCString(br); // patch name, repeated
+            }
+            br.ReadUInt64(); // reserved (0 in all known files currently)
+
             ulong count = br.ReadUInt64();
             Properties.Clear();
             Properties.Capacity = (int)count;
@@ -134,6 +142,12 @@ namespace DieselEngineFormats.Crate
                     Flag = br.ReadUInt32(),
                 });
             }
+
+            // The property table is the last thing in the file; if the record
+            // shape above is wrong we would land off the end here.
+            if (br.BaseStream.Position != br.BaseStream.Length)
+                throw new InvalidDataException(
+                    $"CrateManifest trailer parse ended at {br.BaseStream.Position}, expected EOF ({br.BaseStream.Length}).");
         }
 
         private static string ReadCString(BinaryReader br)
