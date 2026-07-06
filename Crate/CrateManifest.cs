@@ -24,19 +24,16 @@ namespace DieselEngineFormats.Crate
             : DateTime.FromFileTimeUtc((long)Timestamp);
 
         /// <summary>
-        ///     Same variant bitflag as CrateFileEntry.VariantFlag, but unreliable
-        ///     here -- the manifest doesn't list every variant. Use the .crate
-        ///     TOCs as the source of truth for variants.
+        ///     True if this asset has been overridden by a patch crate.
         /// </summary>
-        public uint VariantFlag { get; set; }
+        public bool IsPatchOverride { get; set; }
 
         public CrateManifestEntry(BinaryReader br)
         {
             Extension = HashIndex.Get(br.ReadUInt64());
             Path = HashIndex.Get(br.ReadUInt64());
             Timestamp = br.ReadUInt64();
-            VariantFlag = br.ReadUInt32();
-            br.ReadUInt32(); // likely padding
+            IsPatchOverride = br.ReadUInt64() != 0; // bool in the low byte, rest is padding
         }
 
         public override string ToString() => $"{Path}.{Extension}";
